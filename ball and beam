@@ -1,0 +1,195 @@
+// INSTITUTO FEDERAL FLUMINENSE - CAMPOS CENTRO
+// PROJECT: Development of a position control didatic plant,
+// known as Ball & Beam
+// ADVISOR: Fabio Junio dos Santos Coelho
+// VOLUNTEERS: Guilherme Feitosa Dan
+//             Kaique Guimarães Cerqueira
+//             Ramon Machado Ribeiro de Assumpção Nunes
+//             Caio Barbosa Aded
+
+//=============================================================
+//                          LIBRARIES
+//=============================================================
+#include <Arduino.h>
+#include <ADS1256.h>
+#include <ESP32Servo.h>
+
+//=============================================================
+//                    FUNCTIONS PROTOTYPES
+//=============================================================
+void IRAM_ATTR get_distance();
+void print_distance(float distance);
+void print_ang(float ang);
+
+//=============================================================
+//                    VARIABLES DECLARATION
+//=============================================================
+ADS1256 ads; 
+Servo servo;
+
+// SPS = 1000 / T = 1ms-> float kp = 0.7; ti = 0.5; td = 0.004; td = 0.01; KP = 0.7;
+// SPS = 50 / T = 20 ms
+const int SPS = 25; // Amostras por segundo
+
+// PID PARAMETERS
+char sp_change;
+float sp = 22.0;
+float T = 1.0/SPS; // Período de Amostragem
+
+float kp = 0.7;
+float ti = 0.3; // ti = 0.4;
+float td = 7; // td = 1.6; 
+float KP = 1.2; // KP = 1.5 
+int bias = 97;
+
+// float ki = 0.002;
+float ki = kp*T/(2*ti); // ki ideal = 0.0175
+double I = 0;
+
+//float kd = 20;
+float kd = kp*td/T; // kd ideal = 56
+double D = 0;
+
+float erro = 0;
+float erro_ant = 0;
+float D_ant = 0;
+float D_filtant = 0;
+double PID = 0;
+int tempoinicial = 0;
+int tempofinal = 0;
+
+// SERVO PARAMETERS
+const int servo_pin = 4;
+
+// SENSOR + ADS1256 PARAMETERS
+unsigned long adc_raw = 0;
+float sharp_voltage = 0, sharp_voltage2 = 0, sharp_voltage3 = 0;
+float distance = 0;
+bool flag_adc = 0;
+
+//=============================================================
+//                    1st ORDER LOW-PASS FILTER
+//=============================================================
+float a = 0.9;  //a = 0.5335; 
+float K = 1 - a;
+float erro_pb = 0;
+float erro_pbant = 0;
+double D_filt = 0;
+
+//=============================================================
+//                           SETUP
+//=============================================================
+void setup() {
+    Serial.begin(115200);
+
+    // ADS1256 setup
+    ads.init(5, 14, 25, 1700000, SPS);
+    ads.beginRDATAC();
+
+    // Interrupt
+    attachInterrupt(14, get_distance, FALLING);
+
+    // Servo lib setup
+    ESP32PWM::allocateTimer(0);
+    ESP32PWM::allocateTimer(1);
+    ESP32PWM::allocateTimer(2);
+    ESP32PWM::allocateTimer(3);
+    servo.setPeriodHertz(50);
+    servo.attach(servo_pin, 500, 2500);
+} // setup
+
+//============================================================= 
+//                           LOOP   
+//============================================================= 
+void loop() {   
+
+    if (flag_adc == 1){ 
+        // tempofinal = micros() - tempoinicial;
+        // tempoinicial = micros();
+        while (Serial.available() > 0)
+        {
+        sp_change = Serial.read();
+        Serial.print("\t");
+        //Do something with the data - like print it
+        Serial.print(sp_change);
+        if(sp_change == '+') sp+=5;
+        else if (sp_change == '-') sp-=5;
+        }
+        ads.readADC();  
+        adc_raw = (float) ads.adcValue; 
+        sharp_voltage = (adc_raw * 5.0) / 8368607; // mapping 24bits to 5V  
+        sharp_voltage2 = sharp_voltage*sharp_voltage;   
+        sharp_voltage3 = sharp_voltage2*sharp_voltage;
+        distance = -2.46*sharp_voltage3*sharp_voltage2 + 25.33*sharp_voltage2*sharp_voltage2 - 103.3*sharp_voltage3 + 212.5*sharp_voltage2 - 231.0*sharp_voltage + 122.1 + 1;
+        
+        erro = sp - distance;
+        if (erro > 30) erro = 30;
+        if (erro < (-30)) erro = (-30);
+        
+        I += ki*(erro + erro_ant);
+
+        // Filter * derivative
+        // erro_pb = K*erro_ant + a*erro_pbant;
+        // D_filt = kd*(erro_pb - D_filtant);
+        
+        // Derivative * filter
+        D = kd*(erro - erro_ant);
+        D_filt = K*D_ant + a*D_filtant;
+
+        PID = (KP*erro) + D_filt + I;        
+
+        if (PID > 90) PID = 90;
+        if (PID < -84) PID = -84;
+        servo.write(bias + PID);
+
+        // Prints     
+        print_distance(distance);
+        // print_ang(PID);
+        
+        // Serial.print(D);
+        // Serial.print("\t");
+        // Serial.println(D_filt);
+
+        // Serial.print(erro);
+        // Serial.print("\t");
+        // Serial.println(erro_pb);
+        
+        erro_ant = erro;
+        erro_pbant = erro_pb;
+        D_ant = D;
+        D_filtant = D_filt;
+        
+        flag_adc = 0;
+    }
+} // loop
+
+//=============================================================
+//                    FUNCTIONS DEFINITION
+//=============================================================
+void IRAM_ATTR get_distance() {
+    flag_adc = 1;
+} // get_adc
+
+void print_distance(float distance) 
+{
+    Serial.print(sp);
+    Serial.print("\t");
+    Serial.print(0);
+    Serial.print("\t");
+    Serial.print(35);
+    Serial.print("\t");
+    Serial.print(distance);
+    Serial.println("\t");
+}
+
+void print_ang(float ang)
+{
+    // Serial.print(180);
+    // Serial.print("\t");
+    Serial.print(0);
+    Serial.print("\t");
+    Serial.print(bias);
+    Serial.print("\t");
+    Serial.print(bias + ang);
+    Serial.println("\t");
+}
